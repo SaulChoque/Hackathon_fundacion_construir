@@ -1,63 +1,21 @@
+import os
 import json
-import requests
-from bs4 import BeautifulSoup
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-def extraer_contenido_real(url):
-    """Extrae contenido completo de artículos periodísticos"""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-        }
-        res = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # Estrategias de extracción para diferentes sitios
-        if "infobae.com" in url:
-            contenido = " ".join([p.get_text() for p in soup.select("article p")])
-        elif "lapatria.bo" in url:
-            contenido = " ".join([p.get_text() for p in soup.select(".article-content p")])
-        elif "lostiempos.com" in url:
-            contenido = " ".join([p.get_text() for p in soup.select(".detail-text p")])
-        else:
-            # Extracción genérica como fallback
-            parrafos = soup.find_all('p')
-            contenido = " ".join([p.get_text(strip=True) for p in parrafos if len(p.get_text(strip=True)) > 30])
-        
-        return contenido[:3000]  # Limitar tamaño
-    except Exception as e:
-        print(f"Error extrayendo {url}: {str(e)[:100]}...")
-        return None
+def cargar_datos_enriquecidos(path_json):
+    with open(path_json, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def procesar_resultados(archivo_json):
-    """Enriquece los resultados con contenido real"""
-    with open(archivo_json, 'r', encoding='utf-8') as f:
-        datos = json.load(f)
-    
-    resultados_procesados = []
-    for item in datos:
-        if "just a moment" in item["titulo"].lower():
-            continue  # Saltar captchas
-            
-        contenido_real = extraer_contenido_real(item["url"])
-        if contenido_real:
-            resultados_procesados.append({
-                "titulo": item["titulo"],
-                "fuente": item["url"].split('/')[2],  # Dominio
-                "contenido": f"{item['resumen']}\n\n{contenido_real}" if item["resumen"] else contenido_real
-            })
-    
-    return resultados_procesados[:5]  # Limitar a 5 mejores
-
-def generar_guion_estructurado(datos, tema):
-    """Genera un guion profesional con estructura definida"""
-    # Preparar contexto para el LLM
+def generar_prompt(datos, tema):
     contexto = "\n\n".join(
-        f"Fuente: {item['fuente']}\nTítulo: {item['titulo']}\nContenido: {item['contenido'][:1500]}..."
+        f"Fuente: {item['fuente']}\nTítulo: {item['titulo']}\nContenido: {item['resumen'][:1500]}..."
         for item in datos
     )
-    
+
+    crisis_detectada = any("crisis" in d["resumen"].lower() for d in datos)
+    locutor_intro = "crisis económica" if crisis_detectada else "transición política"
+
     prompt = f"""Eres un analista político experto en elecciones bolivianas. Genera un guion para un video documental de 7-10 minutos sobre:
 
 **Tema central:** {tema}
@@ -97,117 +55,72 @@ def generar_guion_estructurado(datos, tema):
 
 **[INTRODUCCIÓN]**
 (Video: Imágenes de campaña electoral)
-Locutor: "En un contexto de {"crisis económica" if any("crisis" in d["contenido"].lower() for d in datos) else "transición política"}, las elecciones bolivianas de 2025 marcarán..."
+Locutor: "En un contexto de {locutor_intro}, las elecciones bolivianas de 2025 marcarán..."
 """
-    
-    # Cargar modelo (versión optimizada)
-    model_name = "mistralai/Mistral-7B-v0.1"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    return prompt
+
+def generar_guion(prompt, hf_token):
+    print("🔄 Cargando modelo y tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1", use_auth_token=hf_token)
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        "mistralai/Mistral-7B-v0.1",
+        use_auth_token=hf_token,
         torch_dtype=torch.float16,
         device_map="auto"
     )
-    
+
     inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-    
+
     outputs = model.generate(
         **inputs,
         max_new_tokens=1200,
-        temperature=0.6,  # Más preciso
+        temperature=0.6,
         top_p=0.9,
         do_sample=True,
         repetition_penalty=1.1
     )
-    
+
     return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-def generar_guion_corto(datos, tema):
-    """
-    Genera guion para videos cortos (30-60 seg) con:
-    - Hook inicial impactante
-    - 3 puntos clave máximo
-    - Lenguaje simple y directo
-    - Llamado a la acción final
-    """
-    contexto = "\n".join(
-        f"- {item['titulo']}: {item['contenido'][:200]}..." 
-        for item in datos[:3]  # Solo 3 fuentes clave
-    )
-
-    prompt = f"""**Instrucciones para video corto de YouTube (30-60 segundos):**
-Tema: {tema}
-Estilo: Dinámico, rápido y objetivo (para TikTok/Shorts)
-Estructura obligatoria:
-1. [0:00-0:05] HOOK INICIAL: Frase impactante (ej: "¡Esta propuesta cambiará Bolivia!")
-2. [0:05-0:20] CONTEXTO: 1 oración sobre el candidato y elecciones
-3. [0:20-0:45] PROPUESTAS: 2-3 puntos clave (máx 10 palabras cada uno)
-4. [0:45-0:55] DATO CURIOSO: 1 estadística o cita textual
-5. [0:55-1:00] CTA: "¿Qué opinas? Comenta ▼"
-
-**Fuentes disponibles:**
-{contexto}
-
-**Ejemplo de salida:**
-[Hook] "¿Sabías que Doria Medina propone eliminar la reelección presidencial?"
-[Contexto] "En las elecciones 2025, el candidato busca..."
-[Propuestas] 
-1. Reforma económica con 3 medidas clave
-2. Educación gratuita hasta la universidad
-[Dato] "Según La Patria: 68% apoya esta reforma"
-[CTA] "¿Estás de acuerdo? ▼"
-
-**Guion real a generar:**
-"""
-    
-    # Modelo rápido (optimizado para respuestas breves)
-    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
-    model = AutoModelForCausalLM.from_pretrained(
-        "mistralai/Mistral-7B-v0.1",
-        torch_dtype=torch.float16,
-        device_map="auto",
-        load_in_4bit=True  # Para mayor velocidad
-    )
-    
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=350,  # Texto más corto
-        temperature=0.8,     # Más creativo
-        do_sample=True,
-        top_k=40
-    )
-    
-    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("**Guion real a generar:**")[-1]
-
-
-def main():
-    # Configuración
-    tema = "propuestas electorales de Samuel Doria Medina para las elecciones presidenciales de Bolivia 2025"
-    
-    print("📊 Procesando resultados.json...")
-    datos = procesar_resultados("resultados.json")
-    
-    if not datos:
-        print("No se pudo extraer contenido válido")
-        return
-    
-    with open("datos_enriquecidos.json", "w", encoding="utf-8") as f:
-        json.dump(datos, f, ensure_ascii=False, indent=2)
-    
-    print("🎬 Generando guion profesional...")
-    guion = generar_guion_estructurado(datos, tema)
-    
-    # Guardar con formato
-    with open("guion_final.md", "w", encoding="utf-8") as f:
+def guardar_guion(guion, tema):
+    nombre_archivo = "guion_final.md"
+    with open(nombre_archivo, "w", encoding="utf-8") as f:
         f.write(f"# Guion Video Documental: {tema}\n\n")
         f.write(guion)
-    
-    print("\n✅ Proceso completado:")
-    print(f"- Datos enriquecidos: datos_enriquecidos.json")
-    print(f"- Guion profesional: guion_final.md")
-    print("\n--- EXTRACTO ---")
-    print(guion[:1000] + "...")
+    print(f"✅ Guion guardado en: {nombre_archivo}")
+
+def main():
+    tema = "propuestas electorales de Samuel Doria Medina para las elecciones presidenciales de Bolivia 2025"
+    path_json = "resultados_mejorados_Webscrapper_example.json"
+
+    if not os.path.exists(path_json):
+        print("❌ Archivo JSON de entrada no encontrado.")
+        return
+
+    print("📥 Cargando datos enriquecidos...")
+    datos = cargar_datos_enriquecidos(path_json)
+    if not datos:
+        print("❌ No se encontraron datos válidos.")
+        return
+
+    print("✍️ Generando prompt para el modelo...")
+    prompt = generar_prompt(datos, tema)
+
+    # Pega aquí tu token de Hugging Face que tiene acceso al modelo Mistral-7B
+    hf_token = "coloca_tu_token_aquí"
+
+    if not hf_token:
+        print("❌ No se ha definido el token de Hugging Face.")
+        return
+
+    print("🧠 Generando guion con Mistral-7B...")
+    guion = generar_guion(prompt, hf_token)
+
+    print("💾 Guardando guion en archivo Markdown...")
+    guardar_guion(guion, tema)
+
+    print("\n📢 EXTRACTO DEL GUION:")
+    print(guion[:800] + "...\n")
 
 if __name__ == "__main__":
     main()
