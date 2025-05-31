@@ -122,6 +122,65 @@ Locutor: "En un contexto de {"crisis económica" if any("crisis" in d["contenido
     
     return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
+def generar_guion_corto(datos, tema):
+    """
+    Genera guion para videos cortos (30-60 seg) con:
+    - Hook inicial impactante
+    - 3 puntos clave máximo
+    - Lenguaje simple y directo
+    - Llamado a la acción final
+    """
+    contexto = "\n".join(
+        f"- {item['titulo']}: {item['contenido'][:200]}..." 
+        for item in datos[:3]  # Solo 3 fuentes clave
+    )
+
+    prompt = f"""**Instrucciones para video corto de YouTube (30-60 segundos):**
+Tema: {tema}
+Estilo: Dinámico, rápido y objetivo (para TikTok/Shorts)
+Estructura obligatoria:
+1. [0:00-0:05] HOOK INICIAL: Frase impactante (ej: "¡Esta propuesta cambiará Bolivia!")
+2. [0:05-0:20] CONTEXTO: 1 oración sobre el candidato y elecciones
+3. [0:20-0:45] PROPUESTAS: 2-3 puntos clave (máx 10 palabras cada uno)
+4. [0:45-0:55] DATO CURIOSO: 1 estadística o cita textual
+5. [0:55-1:00] CTA: "¿Qué opinas? Comenta ▼"
+
+**Fuentes disponibles:**
+{contexto}
+
+**Ejemplo de salida:**
+[Hook] "¿Sabías que Doria Medina propone eliminar la reelección presidencial?"
+[Contexto] "En las elecciones 2025, el candidato busca..."
+[Propuestas] 
+1. Reforma económica con 3 medidas clave
+2. Educación gratuita hasta la universidad
+[Dato] "Según La Patria: 68% apoya esta reforma"
+[CTA] "¿Estás de acuerdo? ▼"
+
+**Guion real a generar:**
+"""
+    
+    # Modelo rápido (optimizado para respuestas breves)
+    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+    model = AutoModelForCausalLM.from_pretrained(
+        "mistralai/Mistral-7B-v0.1",
+        torch_dtype=torch.float16,
+        device_map="auto",
+        load_in_4bit=True  # Para mayor velocidad
+    )
+    
+    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=350,  # Texto más corto
+        temperature=0.8,     # Más creativo
+        do_sample=True,
+        top_k=40
+    )
+    
+    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("**Guion real a generar:**")[-1]
+
+
 def main():
     # Configuración
     tema = "propuestas electorales de Samuel Doria Medina para las elecciones presidenciales de Bolivia 2025"
