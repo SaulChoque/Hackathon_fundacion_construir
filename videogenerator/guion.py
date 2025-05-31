@@ -1,213 +1,159 @@
-import json
 import requests
 from bs4 import BeautifulSoup
+from googlesearch import search
+import json
+import time
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
-def extraer_contenido_real(url):
-    """Extrae contenido completo de artículos periodísticos"""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-        }
-        res = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # Estrategias de extracción para diferentes sitios
-        if "infobae.com" in url:
-            contenido = " ".join([p.get_text() for p in soup.select("article p")])
-        elif "lapatria.bo" in url:
-            contenido = " ".join([p.get_text() for p in soup.select(".article-content p")])
-        elif "lostiempos.com" in url:
-            contenido = " ".join([p.get_text() for p in soup.select(".detail-text p")])
-        else:
-            # Extracción genérica como fallback
-            parrafos = soup.find_all('p')
-            contenido = " ".join([p.get_text(strip=True) for p in parrafos if len(p.get_text(strip=True)) > 30])
-        
-        return contenido[:3000]  # Limitar tamaño
-    except Exception as e:
-        print(f"Error extrayendo {url}: {str(e)[:100]}...")
-        return None
-
-def procesar_resultados(archivo_json):
-    """Enriquece los resultados con contenido real"""
-    with open(archivo_json, 'r', encoding='utf-8') as f:
-        datos = json.load(f)
+def buscar_noticias(query, num_results=8):
+    """Versión optimizada de tu scraper con:
+    - Filtros mejorados
+    - Extracción de contenido enriquecido
+    - Compatibilidad con generación de shorts"""
     
-    resultados_procesados = []
-    for item in datos:
-        if "just a moment" in item["titulo"].lower():
-            continue  # Saltar captchas
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    }
+    
+    resultados = []
+    dominios_confiables = ["infobae.com", "lostiempos.com", "lapatria.bo", "eldeber.com.bo"]
+    
+    print(f"🔍 Buscando: '{query}'...")
+    
+    for url in search(query, num_results=num_results):
+        try:
+            # Filtro rápido
+            if not any(d in url for d in dominios_confiables):
+                continue
+                
+            print(f"\n📰 Procesando: {url}")
+            res = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(res.text, 'html.parser')
             
-        contenido_real = extraer_contenido_real(item["url"])
-        if contenido_real:
-            resultados_procesados.append({
-                "titulo": item["titulo"],
-                "fuente": item["url"].split('/')[2],  # Dominio
-                "contenido": f"{item['resumen']}\n\n{contenido_real}" if item["resumen"] else contenido_real
+            # Extracción inteligente
+            titulo = soup.title.get_text(strip=True) if soup.title else "Sin título"
+            
+            # Estrategias específicas por sitio
+            if "infobae.com" in url:
+                contenido = " ".join([p.get_text() for p in soup.select("article p")][:8])
+            elif "lostiempos.com" in url:
+                contenido = " ".join([p.get_text() for p in soup.select(".detail-text p")][:5])
+            else:  # Fallback genérico
+                parrafos = [p.get_text(strip=True) for p in soup.find_all("p") if len(p.get_text(strip=True)) > 30]
+                contenido = " ".join(parrafos[:5])
+            
+            if not contenido or len(contenido) < 150:
+                continue
+                
+            resultados.append({
+                "titulo": titulo,
+                "url": url,
+                "fuente": url.split("/")[2],
+                "contenido": contenido[:2500],  # Limitamos tamaño
+                "fecha": time.strftime("%Y-%m-%d")
             })
+            
+            time.sleep(1.2)  # Evitar bloqueos
+            
+        except Exception as e:
+            print(f"⚠️ Error en {url}: {str(e)[:80]}...")
     
-    return resultados_procesados[:5]  # Limitar a 5 mejores
+    return resultados
 
-def generar_guion_estructurado(datos, tema):
-    """Genera un guion profesional con estructura definida"""
-    # Preparar contexto para el LLM
-    contexto = "\n\n".join(
-        f"Fuente: {item['fuente']}\nTítulo: {item['titulo']}\nContenido: {item['contenido'][:1500]}..."
-        for item in datos
-    )
+# =========================
+# 2. GENERADOR DE SHORTS
+# =========================
+def generar_guion_shorts(datos, tema):
+    """Genera guiones virales para YouTube Shorts (30-60 seg) con:
+    - Hook impactante
+    - 2-3 puntos clave
+    - Llamado a la acción
+    - Adaptado a tu scraper mejorado"""
     
-    prompt = f"""Eres un analista político experto en elecciones bolivianas. Genera un guion para un video documental de 7-10 minutos sobre:
-
-**Tema central:** {tema}
-
-**Fuentes investigadas:**
-{contexto}
-
-**Estructura requerida:**
-1. INTRODUCCIÓN (1 min):
-   - Contexto histórico de las elecciones 2025
-   - Presentación del candidato
-   - Mencionar fuentes consultadas
-
-2. PROPUESTAS CLAVE (4-5 mins):
-   - Económicas (máx 2 propuestas concretas con datos)
-   - Políticas (reforma electoral, etc.)
-   - Sociales (educación, salud)
-   - Citando fuentes específicas cuando corresponda
-
-3. ANÁLISIS (2 mins):
-   - Posibles impactos de las propuestas
-   - Comparación breve con otros candidatos
-   - Viabilidad política
-
-4. CONCLUSIÓN (1 min):
-   - Resumen ejecutivo
-   - Frase de cierre impactante
-
-**Estilo:**
-- Formal pero accesible
-- Neutral (no tomar partido)
-- Usar datos verificables
-- Incluir al menos 3 citas textuales de las fuentes
-
-[INICIO DEL GUION]
-**Título:** "Análisis de las propuestas de Samuel Doria Medina para Bolivia 2025"
-
-**[INTRODUCCIÓN]**
-(Video: Imágenes de campaña electoral)
-Locutor: "En un contexto de {"crisis económica" if any("crisis" in d["contenido"].lower() for d in datos) else "transición política"}, las elecciones bolivianas de 2025 marcarán..."
-"""
-    
-    # Cargar modelo (versión optimizada)
-    model_name = "mistralai/Mistral-7B-v0.1"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16,
-        device_map="auto"
-    )
-    
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-    
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=1200,
-        temperature=0.6,  # Más preciso
-        top_p=0.9,
-        do_sample=True,
-        repetition_penalty=1.1
-    )
-    
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-def generar_guion_corto(datos, tema):
-    """
-    Genera guion para videos cortos (30-60 seg) con:
-    - Hook inicial impactante
-    - 3 puntos clave máximo
-    - Lenguaje simple y directo
-    - Llamado a la acción final
-    """
+    # Preparar contexto para IA
     contexto = "\n".join(
-        f"- {item['titulo']}: {item['contenido'][:200]}..." 
-        for item in datos[:3]  # Solo 3 fuentes clave
+        f"📌 {item['titulo']} ({item['fuente']}):\n"
+        f"{item['contenido'][:300]}...\n" 
+        for item in datos[:4]  # Usamos las 4 mejores fuentes
     )
+    
+    prompt = f"""**Instrucciones exactas para YouTube Short (45-60 segundos):**
 
-    prompt = f"""**Instrucciones para video corto de YouTube (30-60 segundos):**
-Tema: {tema}
-Estilo: Dinámico, rápido y objetivo (para TikTok/Shorts)
-Estructura obligatoria:
-1. [0:00-0:05] HOOK INICIAL: Frase impactante (ej: "¡Esta propuesta cambiará Bolivia!")
-2. [0:05-0:20] CONTEXTO: 1 oración sobre el candidato y elecciones
-3. [0:20-0:45] PROPUESTAS: 2-3 puntos clave (máx 10 palabras cada uno)
-4. [0:45-0:55] DATO CURIOSO: 1 estadística o cita textual
-5. [0:55-1:00] CTA: "¿Qué opinas? Comenta ▼"
+**Tema:** {tema}
+**Formato obligatorio:**
+[0:00-0:05] 🎣 HOOK: Frase impactante (usar números/controversia)
+[0:05-0:20] 🎯 CONTEXTO: 1 oración sobre el candidato
+[0:20-0:40] 💡 PROPUESTAS: 2 MÁXIMO (con datos duros si hay)
+[0:40-0:55] 🔥 POLÉMICA: 1 dato controvertido
+[0:55-1:00] ❓ CTA: Pregunta para comentarios
 
 **Fuentes disponibles:**
 {contexto}
 
-**Ejemplo de salida:**
-[Hook] "¿Sabías que Doria Medina propone eliminar la reelección presidencial?"
-[Contexto] "En las elecciones 2025, el candidato busca..."
+**Ejemplo real:**
+[Hook] "¡Doria Medina quiere ELIMINAR la reelección! ¿Estás de acuerdo?"
+[Contexto] "Candidato presidencial propone 3 cambios radicales"
 [Propuestas] 
-1. Reforma económica con 3 medidas clave
-2. Educación gratuita hasta la universidad
-[Dato] "Según La Patria: 68% apoya esta reforma"
-[CTA] "¿Estás de acuerdo? ▼"
+1. Educación gratuita con impuesto a minería (5%)
+2. Internet en zonas rurales (2026)
+[Polémica] "Criticado por empresarios: 'Afectará inversiones'"
+[CTA] "¿Votarías por estas ideas? ▼"
 
-**Guion real a generar:**
+**Guion a generar (usar misma estructura):**
 """
     
-    # Modelo rápido (optimizado para respuestas breves)
+    # Configuración óptima para respuestas cortas
     tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
     model = AutoModelForCausalLM.from_pretrained(
         "mistralai/Mistral-7B-v0.1",
         torch_dtype=torch.float16,
         device_map="auto",
-        load_in_4bit=True  # Para mayor velocidad
+        load_in_4bit=True  # Para mayor eficiencia
     )
     
     inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
     outputs = model.generate(
         **inputs,
-        max_new_tokens=350,  # Texto más corto
-        temperature=0.8,     # Más creativo
-        do_sample=True,
-        top_k=40
+        max_new_tokens=350,
+        temperature=0.75,
+        top_p=0.9,
+        do_sample=True
     )
     
-    return tokenizer.decode(outputs[0], skip_special_tokens=True).split("**Guion real a generar:**")[-1]
+    guion = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return guion.split("**Guion a generar:**")[-1].strip()
 
-
-def main():
-    # Configuración
-    tema = "propuestas electorales de Samuel Doria Medina para las elecciones presidenciales de Bolivia 2025"
-    
-    print("📊 Procesando resultados.json...")
-    datos = procesar_resultados("resultados.json")
-    
-    if not datos:
-        print("No se pudo extraer contenido válido")
-        return
-    
-    with open("datos_enriquecidos.json", "w", encoding="utf-8") as f:
-        json.dump(datos, f, ensure_ascii=False, indent=2)
-    
-    print("🎬 Generando guion profesional...")
-    guion = generar_guion_estructurado(datos, tema)
-    
-    # Guardar con formato
-    with open("guion_final.md", "w", encoding="utf-8") as f:
-        f.write(f"# Guion Video Documental: {tema}\n\n")
-        f.write(guion)
-    
-    print("\n✅ Proceso completado:")
-    print(f"- Datos enriquecidos: datos_enriquecidos.json")
-    print(f"- Guion profesional: guion_final.md")
-    print("\n--- EXTRACTO ---")
-    print(guion[:1000] + "...")
-
+# ======================
+# 3. EJECUCIÓN PRINCIPAL
+# ======================
 if __name__ == "__main__":
-    main()
+    # Configuración
+    TEMA = "Propuestas de Samuel Doria Medina - Elecciones Bolivia 2025"
+    QUERY = f"{TEMA} site:news OR site:com OR site:org -filetype:pdf"
+    
+    # Paso 1: Búsqueda y scraping
+    print("🕵️‍♂️ Buscando noticias actualizadas...")
+    datos_web = buscar_noticias(QUERY)
+    
+    if not datos_web:
+        print("❌ No se encontraron resultados válidos")
+        exit()
+    
+    with open("noticias_actuales.json", "w", encoding="utf-8") as f:
+        json.dump(datos_web, f, ensure_ascii=False, indent=2)
+    
+    # Paso 2: Generar guion para Shorts
+    print("\n🎬 Generando guion viral...")
+    guion_final = generar_guion_shorts(datos_web, TEMA)
+    
+    # Guardar resultado
+    with open("guion_shorts_final.txt", "w", encoding="utf-8") as f:
+        f.write(f"# GUION PARA YOUTUBE SHORTS - {TEMA}\n\n")
+        f.write(guion_final)
+    
+    print("\n✅ ¡Proceso completado!")
+    print(f"- Noticias scrapeadas: noticias_actuales.json")
+    print(f"- Guion para Shorts: guion_shorts_final.txt")
+    print("\n💡 Ejemplo de guion generado:")
+    print(guion_final[:500] + "...")
