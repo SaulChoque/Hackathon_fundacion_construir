@@ -4,7 +4,7 @@ from googlesearch import search
 import json
 
 # Término de búsqueda
-query = "Andronico rodriguez elecciones presidenciales Bolivia 2025 periodico"
+query = "Samuel doria medina, propuesta elecciones presidenciales Bolivia 2025  periodico"
 
 # Cabecera para evitar bloqueos
 headers = {
@@ -39,4 +39,4 @@ for url in search(query, num_results=10):
 with open("resultados.json", "w", encoding="utf-8") as f:
     json.dump(resultados, f, ensure_ascii=False, indent=4)
 
-print("✅ Resultados guardados en luis_arce_resultados.json")
+print("✅ Resultados guardados en resultados.json")
